@@ -1,5 +1,5 @@
 resource "aws_s3_bucket" "bucket_estado_terraform" {
-  bucket        = "tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis"
+  bucket        = var.bucket_name
   force_destroy = false
 }
 
