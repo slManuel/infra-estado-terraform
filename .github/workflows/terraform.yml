@@ -56,10 +56,6 @@ jobs:
           terraform_version: 1.15.9
           terraform_wrapper: false
 
-      - name: Impedir rerun con artefactos ambiguos
-        run: |
-          test "$GITHUB_RUN_ATTEMPT" = "1"
-
       - name: Restaurar automáticamente el último estado efectivo
         run: |
           umask 077
@@ -184,6 +180,7 @@ jobs:
                    for name in names}
           manifest = {
               "operation": "plan", "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "commit": os.environ["GITHUB_SHA"], "terraform": "1.15.9",
               "has_state": has_state, "files": files,
               "plan_sha256": files["bootstrap.tfplan"],
@@ -199,7 +196,7 @@ jobs:
       - name: Guardar plan para auditoría
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: terraform-plan-${{ github.run_id }}-1
+          name: terraform-plan-${{ github.run_id }}-${{ github.run_attempt }}
           path: .review/
           include-hidden-files: true
           if-no-files-found: error

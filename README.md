@@ -22,11 +22,11 @@ El rol OIDC de microservicio acepta exactamente develop/qa/main y opera las tres
 
 ## Workflow
 
-**1 workflow, 2 jobs, 22 pasos:** checks (5) → deploy (17). Cada push o merge a `main` ejecuta automáticamente validación, restauración, plan, compuerta de alcance, apply del mismo archivo y respaldo. Los PR hacia main solo ejecutan checks, sin credenciales AWS. No requiere aprobación, ejecución manual ni variable AWS_DEPLOY_ENABLED. Solo este bootstrap compartido usa ese automatismo.
+**1 workflow, 2 jobs, 21 pasos:** checks (5) → deploy (16). Cada push o merge a `main` ejecuta automáticamente validación, restauración, plan, compuerta de alcance, apply del mismo archivo y respaldo. Los PR hacia main solo ejecutan checks, sin credenciales AWS. No requiere aprobación, ejecución manual ni variable AWS_DEPLOY_ENABLED. Solo este bootstrap compartido usa ese automatismo.
 
 La restauración busca mediante la API de GitHub el último intento de apply de este mismo workflow/repositorio/main, incluso si terminó con fallo parcial. Exige su artefacto exacto no expirado, valida origen/commit/intento y SHA-256 del ZIP. Los respaldos nuevos incluyen manifiesto con SHA-256 del estado, linaje y serial. Solo el respaldo confirmado `terraform-state-38069049415-1` admite el formato histórico sin manifiesto, como transición inicial. Nunca usa un estado vacío, un respaldo anterior ni el archivo `.backup` para sustituir un estado actual ausente. Un primer despliegue sin historial exige un procedimiento explícito separado.
 
-La compuerta solo admite los 10 recursos S3 de QA/production (create/no-op), las dos políticas micro y la confianza de su rol (update/no-op); todo lo demás debe ser no-op. Rechaza eliminaciones y reemplazos. El apply conserva el plan guardado y comprueba que main sigue en el mismo commit. Las ejecuciones se serializan sin cancelar un apply anterior; reruns ambiguos se rechazan. Estado: 14 días; plan/logs: un día. Si el último respaldo falta o expira, el despliegue se detiene y requiere recuperación explícita; estos artefactos aún no sustituyen un backend persistente.
+La compuerta solo admite los 10 recursos S3 de QA/production (create/no-op), las dos políticas micro y la confianza de su rol (update/no-op); todo lo demás debe ser no-op. Rechaza eliminaciones y reemplazos. El apply conserva el plan guardado y comprueba que main sigue en el mismo commit. Las ejecuciones se serializan sin cancelar un apply anterior. Los reruns restauran el último estado efectivo, incluido el de un intento previo del mismo run; planes, logs y respaldos se identifican por run e intento, sin sobrescribir artefactos. Estado: 14 días; plan/logs: un día. Si el último respaldo falta o expira, el despliegue se detiene y requiere recuperación explícita; estos artefactos aún no sustituyen un backend persistente.
 
 | Job `checks`: paso | Función |
 |---|---|
@@ -40,24 +40,25 @@ La compuerta solo admite los 10 recursos S3 de QA/production (create/no-op), las
 |---|---|
 | 1. Checkout | Obtiene el commit de main que se desplegará. |
 | 2. Setup Terraform | Instala Terraform 1.15.9. |
-| 3. Impedir rerun ambiguo | Exige el primer intento del run. |
-| 4. Restaurar automáticamente | Localiza el último apply, descarga su artefacto exacto y verifica integridad antes de escribir el estado. |
-| 5. OIDC | Asume el rol AWS de estado con credenciales temporales. |
-| 6. Verificar estado frente a AWS | Bloquea recursos existentes sin registro en el estado restaurado. |
-| 7. Inicializar y validar | Conecta la configuración al estado y valida Terraform. |
-| 8. Planificar | Guarda bootstrap.tfplan y plan.log. |
-| 9. Compuerta de alcance | Rechaza eliminaciones, reemplazos o modificaciones no autorizadas. |
-| 10. Preparar auditoría | Reúne plan, lockfile y estado con hashes, commit y run. |
-| 11. Guardar auditoría | Conserva el paquete privado durante un día. |
-| 12. Comprobar main | Verifica que main todavía apunta al commit ejecutado. |
-| 13. Aplicar plan guardado | Aplica el mismo bootstrap.tfplan y registra apply.log. |
-| 14. Resumir resultado | Resume resultados y errores, incluso ante fallo. |
-| 15. Preparar respaldo | Selecciona el estado actual de mayor serial, comprueba linaje y genera su manifiesto; también ante fallo parcial. |
-| 16. Conservar estado | Sube el estado y manifiesto como artefacto privado durante 14 días, incluso ante fallo. |
-| 17. Conservar logs | Guarda plan.log/apply.log durante un día, incluso ante fallo. |
+| 3. Restaurar automáticamente | Localiza el último apply, descarga su artefacto exacto y verifica integridad antes de escribir el estado. |
+| 4. OIDC | Asume el rol AWS de estado con credenciales temporales. |
+| 5. Verificar estado frente a AWS | Bloquea recursos existentes sin registro en el estado restaurado. |
+| 6. Inicializar y validar | Conecta la configuración al estado y valida Terraform. |
+| 7. Planificar | Guarda bootstrap.tfplan y plan.log. |
+| 8. Compuerta de alcance | Rechaza eliminaciones, reemplazos o modificaciones no autorizadas. |
+| 9. Preparar auditoría | Reúne plan, lockfile y estado con hashes, commit y run. |
+| 10. Guardar auditoría | Conserva el paquete privado durante un día. |
+| 11. Comprobar main | Verifica que main todavía apunta al commit ejecutado. |
+| 12. Aplicar plan guardado | Aplica el mismo bootstrap.tfplan y registra apply.log. |
+| 13. Resumir resultado | Resume resultados y errores, incluso ante fallo. |
+| 14. Preparar respaldo | Selecciona el estado actual de mayor serial, comprueba linaje y genera su manifiesto; también ante fallo parcial. |
+| 15. Conservar estado | Sube el estado y manifiesto como artefacto privado durante 14 días, incluso ante fallo. |
+| 16. Conservar logs | Guarda plan.log/apply.log durante un día, incluso ante fallo. |
 
 ## Historial verificado y recuperación
 
 La [ejecución 38069049415](https://github.com/slManuel/infra-estado-terraform/actions/runs/38069049415) restauró el estado existente y verificó un plan de **10 creaciones, 3 cambios, 0 eliminaciones**. Se actualizaron la confianza y la política de aprovisionamiento del rol microservicio; los dos buckets nuevos fallaron con AccessDenied para s3:CreateBucket. El estado parcial quedó conservado como `terraform-state-38069049415-1`, serial 27, y es la base de la restauración automática. El 10 de octubre se guardó y verificó en IAM la ampliación del rol bootstrap exclusivamente a los ARN QA/production en sus tres bloques S3; acciones y condiciones originales se conservaron. El bucket original/OIDC/roles compartidos no se recrearon. [Evidencia previa](imágenes/).
 
 La ejecución automática 38069815451 restauró ese estado, pero CreateBucket volvió a ser denegado antes del ajuste IAM; no completó creaciones ni modificaciones. Su respaldo posterior se omitió por la exclusión de carpetas ocultas de upload-artifact. La subida ahora incluye include-hidden-files=true. La recuperación única autorizada está documentada en `.github/state-recovery.json`: fija run/intento/commit e IDs/hashes de los paquetes de plan y logs del mismo intento, hash del estado y linaje, serial 27. No contiene el estado. Solo permite recuperar ese snapshot si no hubo operaciones completadas; el siguiente plan debe contrastar AWS y admitir exactamente las 10 creaciones y la política de estado micro pendiente, sin cambios en los demás recursos. Un run distinto, hash diferente, operaciones completadas o drift bloquean el avance. Después del próximo apply se usará su respaldo nuevo con manifiesto. Consultar [Actions](https://github.com/slManuel/infra-estado-terraform/actions/workflows/terraform.yml) para el resultado más reciente.
+
+**Estado actual verificado — 10 de octubre de 2026:** [38070674865](https://github.com/slManuel/infra-estado-terraform/actions/runs/38070674865) terminó correctamente: **10 recursos creados, 1 actualizado, 0 eliminados**. AWS lista exactamente los tres buckets; el original, tres roles y OIDC se conservaron. Los tres tienen versionado Enabled, SSE-S3 AES256, cuatro bloqueos de acceso público y política HTTPS. El respaldo `terraform-state-38070674865-1`, serial 39, tiene ZIP/manifiesto/estado verificados y es la nueva fuente de restauración automática; la excepción anterior ya no se selecciona.

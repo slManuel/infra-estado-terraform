@@ -34,19 +34,21 @@ def latest_apply(current, get):
     base = "repos/" + repo["full_name"]
     candidates = []
     for run in pages(base + f'/actions/workflows/{current["workflow_id"]}/runs', "workflow_runs", get):
-        if run["id"] == current["id"]:
-            continue
+        same_run = run["id"] == current["id"]
         if (run["repository"]["id"] != repo["id"] or run["workflow_id"] != current["workflow_id"]
                 or run["head_branch"] != "main" or run["event"] not in ("push", "workflow_dispatch")):
             continue
-        for attempt in range(1, run["run_attempt"] + 1):
+        # A rerun may restore a completed apply from its own earlier attempt.
+        end_attempt = current["run_attempt"] if same_run else run["run_attempt"] + 1
+        for attempt in range(1, end_attempt):
             jobs = pages(base + f'/actions/runs/{run["id"]}/attempts/{attempt}/jobs', "jobs", get)
             for job in jobs:
                 for step in job.get("steps", []):
                     if (step["name"] not in APPLY_STEPS or step.get("conclusion") == "skipped"
                             or step["status"] not in ("in_progress", "completed")):
                         continue
-                    if run["status"] != "completed":
+                    if ((not same_run and run["status"] != "completed")
+                            or job.get("status") == "in_progress" or step["status"] == "in_progress"):
                         raise ValueError("Otro apply todavía no terminó; no se puede restaurar su estado.")
                     started = step.get("started_at", "")
                     if not started or started.startswith("0001-"):

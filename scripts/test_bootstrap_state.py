@@ -46,6 +46,17 @@ def artifact(source, attempt, raw):
 
 
 class RestoreTests(unittest.TestCase):
+    def test_rerun_restores_own_previous_attempt(self):
+        current=run(99,attempt=2)
+        current["status"]="in_progress"
+        def get(path):
+            if "/workflows/" in path:
+                return {"workflow_runs":[current]}
+            self.assertIn("/runs/99/attempts/1/jobs?",path)
+            return {"jobs":[{"status":"completed","steps":[step("2026-10-10T01:00:00Z","failure")]}]}
+        source,attempt=latest_apply(current,get)
+        self.assertEqual((source["id"],attempt),(99,1))
+
     def test_recovery_is_exact_origin_and_rejects_completed_operations(self):
         source=run(2,"failure")
         payload=state()
@@ -175,6 +186,8 @@ class RestoreTests(unittest.TestCase):
         self.assertIn("github.ref == 'refs/heads/main' && github.event_name == 'push'", text)
         self.assertNotIn("workflow_dispatch:", text)
         self.assertNotIn("vars.AWS_DEPLOY_ENABLED", text)
+        self.assertNotIn('test "$GITHUB_RUN_ATTEMPT" = "1"', text)
+        self.assertIn('name: terraform-plan-${{ github.run_id }}-${{ github.run_attempt }}',text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("terraform apply -no-color -input=false -lock-timeout=5m bootstrap.tfplan", text)
         self.assertIn("path: .state-backup/\n          include-hidden-files: true", text)
