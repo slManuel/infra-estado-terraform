@@ -69,7 +69,7 @@ aprovisionar_jenkins_vault y aprovisionar_microservicio permiten crear, consulta
 
 IAM se limita a roles con prefijos prueba-devops-jenkins-vault-* y prueba-devops-microservicio-*, respectivamente, cinco políticas administradas enumeradas y PassRole a eks.amazonaws.com/pods.eks.amazonaws.com. CreateRole y UpdateAssumeRolePolicy permiten definir confianza dentro de esos prefijos; no son una garantía absoluta contra delegación privilegiada. Se permite crear los dos service-linked roles de EKS y leer el usuario administrador manuel-dev. No se conceden PutRolePolicy sobre roles de ejecución, creación de políticas ni AdministratorAccess.
 
-No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.381 caracteres (883 S3 + 3.498 EKS), microservicio 4.384 (886 + 3.498), frente al límite agregado de 10.240; no incluyen políticas externas al código.
+No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.461 caracteres (883 S3 + 3.578 EKS), microservicio 4.464 (886 + 3.578), frente al límite agregado de 10.240; no incluyen políticas externas al código.
 
 [Autorización EKS](https://docs.aws.amazon.com/service-authorization/latest/reference/list_eks.html) · [Autorización IAM](https://docs.aws.amazon.com/service-authorization/latest/reference/list_iam.html) · [Plantillas EKS](https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html).
 
@@ -80,3 +80,6 @@ El run [38025501360](https://github.com/slManuel/infra-estado-terraform/actions/
 
 
 Corrección de dependencias EKS: AmazonEBSCSIDriverPolicyV2 usa ARN arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2, sin service-role/. Ambas políticas de capacidad añaden iam:GetRole exclusivamente para AWSServiceRoleForAmazonEKS/AWSServiceRoleForAmazonEKSNodegroup. La compuerta de esta corrección exige solo dos updates de esas políticas, cero creaciones/eliminaciones; todos los demás recursos no-op. Se restaura el último respaldo38025501360. Fuente ARN: https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonEBSCSIDriverPolicyV2.html .
+
+
+La consulta IAM de un rol vinculado aún inexistente se autoriza también por el ARN sin ruta arn:aws:iam::${aws_account_id}:role/AWSServiceRoleForAmazonEKSNodegroup, únicamente GetRole. Se conserva el ARN canónico con ruta para cuando exista. El diagnóstico OIDC38027564437 se detuvo antes de plan/apply y confirmó AccessDenied en GetRole. La segunda corrección restaura el estado38027207876 y actualiza únicamente ambas políticas EKS.
