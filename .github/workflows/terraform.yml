@@ -5,16 +5,6 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      restore_run_id:
-        description: "Run que contiene el estado a restaurar; vacío solo para el primer despliegue"
-        type: string
-        default: ""
-      restore_run_attempt:
-        description: "Intento del run que contiene el respaldo confirmado"
-        type: string
-        default: "1"
 
 permissions:
   contents: read
@@ -38,10 +28,11 @@ jobs:
           terraform validate
           terraform test -no-color
           python3 scripts/test_bootstrap_plan.py
+          python3 scripts/test_bootstrap_state.py
 
   deploy:
     needs: checks
-    if: vars.AWS_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -57,8 +48,6 @@ jobs:
       AWS_DEFAULT_REGION: us-east-1
       AWS_PAGER: ""
       GH_TOKEN: ${{ github.token }}
-      RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
-      RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
 
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -71,64 +60,10 @@ jobs:
         run: |
           test "$GITHUB_RUN_ATTEMPT" = "1"
 
-      - name: Exigir estado del último apply ejecutado
+      - name: Restaurar automáticamente el último estado efectivo
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-
-          def api(path):
-              return json.loads(subprocess.check_output(["gh", "api", path], text=True))
-
-          e = os.environ
-          repo = "repos/" + e["GITHUB_REPOSITORY"]
-          current = api(repo + "/actions/runs/" + e["GITHUB_RUN_ID"])
-          latest = None
-          page = 1
-          while True:
-              runs = api(repo + "/actions/workflows/" + str(current["workflow_id"])
-                         + "/runs?per_page=100&page=" + str(page))["workflow_runs"]
-              for run in runs:
-                  if str(run["id"]) == e["GITHUB_RUN_ID"]:
-                      continue
-                  job_page = 1
-                  while True:
-                      jobs = api(repo + "/actions/runs/" + str(run["id"])
-                                 + "/jobs?filter=all&per_page=100&page=" + str(job_page))["jobs"]
-                      for job in jobs:
-                          for step in job.get("steps", []):
-                              if (step["name"] in ("Aplicar plan aprobado", "Aplicar plan guardado")
-                                  and step["status"] in ("in_progress", "completed")
-                                  and step.get("conclusion") != "skipped"):
-                                  timestamp = step.get("started_at")
-                                  if not timestamp:
-                                      raise SystemExit("No se puede determinar el último apply.")
-                                  candidate = (timestamp, str(run["id"]))
-                                  if latest is None or candidate > latest:
-                                      latest = candidate
-                      if len(jobs) < 100:
-                          break
-                      job_page += 1
-              if len(runs) < 100:
-                  break
-              page += 1
-          selected = e.get("RESTORE_RUN_ID", "")
-          if latest is None:
-              if selected:
-                  raise SystemExit("Sin apply previo: no corresponde seleccionar un respaldo.")
-          elif selected != latest[1] or e.get("RESTORE_RUN_ATTEMPT") != "1":
-              raise SystemExit("Restaurar el respaldo del último apply: run " + latest[1] + ", intento 1.")
-          PY
-
-      - name: Restaurar respaldo elegido explícitamente
-        if: github.event_name == 'workflow_dispatch' && inputs.restore_run_id != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: terraform-state-${{ inputs.restore_run_id }}-${{ inputs.restore_run_attempt }}
-          run-id: ${{ inputs.restore_run_id }}
-          github-token: ${{ github.token }}
-          path: .
+          umask 077
+          python3 scripts/bootstrap_state.py restore
 
       - name: Autenticarse mediante OIDC
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -276,6 +211,7 @@ jobs:
           test "$head" = "$GITHUB_SHA"
 
       - name: Aplicar plan guardado
+        id: apply
         shell: bash
         run: |
           umask 077
@@ -318,15 +254,20 @@ jobs:
               summary.write("\n\n" + "\n\n".join(lines) + "\n")
           PY
 
+      - name: Preparar respaldo íntegro del estado actual
+        if: always()
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+        run: |
+          umask 077
+          python3 scripts/bootstrap_state.py backup
+
       - name: Conservar estado, también ante fallo parcial
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: terraform-state-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            terraform.tfstate
-            terraform.tfstate.backup
-            errored.tfstate
+          path: .state-backup/
           if-no-files-found: ignore
           retention-days: 14
 

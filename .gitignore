@@ -14,3 +14,5 @@ apply.log
 !.env.example
 crash.log
 crash.*.log
+.state-backup/
+__pycache__/

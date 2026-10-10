@@ -22,38 +22,40 @@ El rol OIDC de microservicio acepta exactamente develop/qa/main y opera las tres
 
 ## Workflow
 
-**1 workflow, 2 jobs, 22 pasos:** checks (5) → deploy (17). Push/PR a main solo valida. Deploy exige ejecución manual en main y `AWS_DEPLOY_ENABLED=true`; administra juntos los tres buckets, no solo producción.
+**1 workflow, 2 jobs, 22 pasos:** checks (5) → deploy (17). Cada push o merge a `main` ejecuta automáticamente validación, restauración, plan, compuerta de alcance, apply del mismo archivo y respaldo. Los PR hacia main solo ejecutan checks, sin credenciales AWS. No requiere aprobación, ejecución manual ni variable AWS_DEPLOY_ENABLED. Solo este bootstrap compartido usa ese automatismo.
 
-Restaurar el respaldo del último apply mediante restore_run_id/restore_run_attempt. La compuerta solo admite 10 recursos nuevos de QA/production, dos políticas micro y el trust de su rol; todo lo demás debe ser no-op. Rechaza destrucción/reemplazo. El workflow aplica el mismo plan dentro de esa ejecución manual; **no es un flujo para obtener solamente un plan**. Estado: 14 días; plan/logs: un día.
+La restauración busca mediante la API de GitHub el último intento de apply de este mismo workflow/repositorio/main, incluso si terminó con fallo parcial. Exige su artefacto exacto no expirado, valida origen/commit/intento y SHA-256 del ZIP. Los respaldos nuevos incluyen manifiesto con SHA-256 del estado, linaje y serial. Solo el respaldo confirmado `terraform-state-38069049415-1` admite el formato histórico sin manifiesto, como transición inicial. Nunca usa un estado vacío, un respaldo anterior ni el archivo `.backup` para sustituir un estado actual ausente. Un primer despliegue sin historial exige un procedimiento explícito separado.
+
+La compuerta solo admite los 10 recursos S3 de QA/production (create/no-op), las dos políticas micro y la confianza de su rol (update/no-op); todo lo demás debe ser no-op. Rechaza eliminaciones y reemplazos. El apply conserva el plan guardado y comprueba que main sigue en el mismo commit. Las ejecuciones se serializan sin cancelar un apply anterior; reruns ambiguos se rechazan. Estado: 14 días; plan/logs: un día. Si el último respaldo falta o expira, el despliegue se detiene y requiere recuperación explícita; estos artefactos aún no sustituyen un backend persistente.
 
 | Job `checks`: paso | Función |
 |---|---|
-| 1. Checkout | Obtiene el código del repositorio. |
+| 1. Checkout | Obtiene el código. |
 | 2. Setup Terraform | Instala Terraform 1.15.9. |
-| 3. `terraform fmt -check -diff` | Comprueba recursivamente raíz, módulos y pruebas sin modificar archivos. |
-| 4. `terraform init -backend=false` | Inicializa módulos y proveedores sin configurar el backend. |
-| 5. `terraform validate` | Valida Terraform, prueba tres buckets con proveedor simulado y prueba la compuerta del plan. |
+| 3. Formato | Comprueba raíz, módulos y pruebas sin modificar archivos. |
+| 4. Init sin backend | Inicializa módulos y proveedores. |
+| 5. Validación y pruebas | Valida Terraform, simula tres buckets y prueba alcance/restauración segura. |
 
 | Job `deploy`: paso | Función |
 |---|---|
-| 1. Checkout | Obtiene el código que se va a desplegar. |
+| 1. Checkout | Obtiene el commit de main que se desplegará. |
 | 2. Setup Terraform | Instala Terraform 1.15.9. |
-| 3. Impedir rerun con artefactos ambiguos | Exige el primer intento del run. |
-| 4. Exigir estado del último apply ejecutado | Comprueba que se seleccionó el run del último apply ejecutado, incluso si terminó con fallo. |
-| 5. Restaurar respaldo elegido explícitamente | En ejecución manual con `restore_run_id`, descarga el estado del run e intento indicados. |
-| 6. Autenticarse mediante OIDC | Asume el rol AWS de estado con credenciales temporales. |
-| 7. Impedir plan nuevo sobre recursos sin estado | Valida el respaldo y bloquea el avance si cualquiera de los tres buckets o los tres roles existe sin registro en ese estado. |
-| 8. Inicializar y validar | Ejecuta `terraform init` y `terraform validate`. |
-| 9. Planificar configuración completa | Guarda `bootstrap.tfplan` y registra la salida en `plan.log`. |
-| 10. Detener eliminaciones o reemplazos | Solo admite los 10 recursos S3 de QA/producción (create/no-op), las dos políticas de estado/provisioning micro y la confianza de su rol OIDC (update/no-op). Todo lo demás debe ser no-op; nunca delete/reemplazo. |
-| 11. Preparar paquete de auditoría del plan | Reúne plan, lockfile y estado disponible, con manifiesto SHA-256, commit y run; publica sus referencias en el resumen. |
-| 12. Guardar plan para auditoría | Sube el paquete como artefacto con retención de 1 día. |
-| 13. Comprobar main antes de aplicar | Verifica que `main` todavía apunta al commit de la ejecución. |
-| 14. Aplicar plan guardado | Aplica automáticamente el mismo `bootstrap.tfplan` y registra la salida en `apply.log`. |
-| 15. Resumir resultado y diagnóstico | Incluso ante fallo, resume resultados y errores AWS de los logs disponibles. |
-| 16. Conservar estado, también ante fallo parcial | Intenta respaldar los archivos de estado disponibles como artefacto durante 14 días. |
-| 17. Conservar logs de Terraform, también ante fallo | Intenta guardar `plan.log` y `apply.log` como artefacto durante 1 día. |
+| 3. Impedir rerun ambiguo | Exige el primer intento del run. |
+| 4. Restaurar automáticamente | Localiza el último apply, descarga su artefacto exacto y verifica integridad antes de escribir el estado. |
+| 5. OIDC | Asume el rol AWS de estado con credenciales temporales. |
+| 6. Verificar estado frente a AWS | Bloquea recursos existentes sin registro en el estado restaurado. |
+| 7. Inicializar y validar | Conecta la configuración al estado y valida Terraform. |
+| 8. Planificar | Guarda bootstrap.tfplan y plan.log. |
+| 9. Compuerta de alcance | Rechaza eliminaciones, reemplazos o modificaciones no autorizadas. |
+| 10. Preparar auditoría | Reúne plan, lockfile y estado con hashes, commit y run. |
+| 11. Guardar auditoría | Conserva el paquete privado durante un día. |
+| 12. Comprobar main | Verifica que main todavía apunta al commit ejecutado. |
+| 13. Aplicar plan guardado | Aplica el mismo bootstrap.tfplan y registra apply.log. |
+| 14. Resumir resultado | Resume resultados y errores, incluso ante fallo. |
+| 15. Preparar respaldo | Selecciona el estado actual de mayor serial, comprueba linaje y genera su manifiesto; también ante fallo parcial. |
+| 16. Conservar estado | Sube el estado y manifiesto como artefacto privado durante 14 días, incluso ante fallo. |
+| 17. Conservar logs | Guarda plan.log/apply.log durante un día, incluso ante fallo. |
 
-## Estado
+## Estado verificado
 
-El bootstrap anterior tiene [evidencia real](imágenes/). Los dos buckets nuevos y los permisos ampliados están publicados, sin plan/apply cloud. Falta comprobar nombres S3 disponibles, permisos del rol bootstrap y el plan con estado restaurado. El gate AWS_DEPLOY_ENABLED permanece en false. La ejecución manual 38067940124 se canceló antes de autenticarse en AWS o aplicar cambios. El respaldo válido del último apply sigue siendo terraform-state-38027688224-1. No se modifican OIDC ni recursos existentes mediante recreación.
+La [ejecución 38069049415](https://github.com/slManuel/infra-estado-terraform/actions/runs/38069049415) restauró el estado existente y verificó un plan de **10 creaciones, 3 cambios, 0 eliminaciones**. Se actualizaron la confianza y la política de aprovisionamiento del rol microservicio; los dos buckets nuevos fallaron con AccessDenied para s3:CreateBucket. El estado parcial quedó conservado como `terraform-state-38069049415-1`, serial 27, y es la base de la restauración automática. El rol bootstrap sigue pendiente de ampliar sus permisos S3 exclusivamente a los ARN QA/production; el ajuste preparado en consola no se guardó. El bucket original/OIDC/roles compartidos no se recrearon. [Evidencia previa](imágenes/).
