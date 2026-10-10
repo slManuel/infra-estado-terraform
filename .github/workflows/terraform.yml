@@ -1,4 +1,4 @@
-name: Planificar y aprobar infraestructura de estado
+name: Planificar y aplicar infraestructura de estado
 
 on:
   push:
@@ -7,23 +7,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      operation:
-        description: "plan: generar propuesta; apply: aprobar exactamente el plan indicado"
-        type: choice
-        options: [plan, apply]
-        default: plan
-      plan_run_id:
-        description: "ID del run del plan revisado; obligatorio para apply"
-        type: string
-        default: ""
-      plan_commit:
-        description: "Commit completo del plan revisado; obligatorio para apply"
-        type: string
-        default: ""
-      plan_sha256:
-        description: "SHA-256 del plan revisado; obligatorio para apply"
-        type: string
-        default: ""
       restore_run_id:
         description: "Run que contiene el estado a restaurar; vacío solo para el primer despliegue"
         type: string
@@ -70,13 +53,7 @@ jobs:
       AWS_REGION: us-east-1
       AWS_DEFAULT_REGION: us-east-1
       AWS_PAGER: ""
-      OPERATION: ${{ inputs.operation || 'plan' }}
-      PLAN_RUN_ID: ${{ inputs.plan_run_id }}
-      PLAN_COMMIT: ${{ inputs.plan_commit }}
-      PLAN_SHA256: ${{ inputs.plan_sha256 }}
       GH_TOKEN: ${{ github.token }}
-      APPROVER_ID: ${{ github.actor_id }}
-      TRIGGERING_ACTOR: ${{ github.triggering_actor }}
       RESTORE_RUN_ID: ${{ inputs.restore_run_id }}
       RESTORE_RUN_ATTEMPT: ${{ inputs.restore_run_attempt }}
 
@@ -90,129 +67,8 @@ jobs:
       - name: Impedir rerun con artefactos ambiguos
         run: |
           test "$GITHUB_RUN_ATTEMPT" = "1"
-          case "$OPERATION" in plan|apply) ;; *) exit 1 ;; esac
-
-      - name: Validar aprobación manual y vigencia del plan
-        if: env.OPERATION == 'apply'
-        run: |
-          python3 - <<'PY'
-          import datetime as dt
-          import json
-          import os
-          import re
-          import subprocess
-
-          def api(path):
-              return json.loads(subprocess.check_output(["gh", "api", path], text=True))
-
-          e = os.environ
-          if (e["GITHUB_EVENT_NAME"] != "workflow_dispatch"
-              or e["GITHUB_REF"] != "refs/heads/main"
-              or e["APPROVER_ID"] != "65916668"
-              or e["TRIGGERING_ACTOR"] != "slManuel"
-              or e["GITHUB_RUN_ATTEMPT"] != "1"):
-              raise SystemExit("Apply requiere aprobación manual de slManuel en main, sin rerun.")
-          for key, pattern in (
-              ("PLAN_RUN_ID", r"[1-9][0-9]*"),
-              ("PLAN_COMMIT", r"[0-9a-f]{40}"),
-              ("PLAN_SHA256", r"[0-9a-f]{64}"),
-          ):
-              if not re.fullmatch(pattern, e[key]):
-                  raise SystemExit("Identificación del plan incompleta o inválida.")
-          repo = "repos/" + e["GITHUB_REPOSITORY"]
-          current = api(repo + "/actions/runs/" + e["GITHUB_RUN_ID"])
-          source = api(repo + "/actions/runs/" + e["PLAN_RUN_ID"])
-          if (source["workflow_id"] != current["workflow_id"]
-              or source["head_branch"] != "main"
-              or source["head_sha"] != e["PLAN_COMMIT"]
-              or source["event"] not in ("push", "workflow_dispatch")
-              or source["conclusion"] != "success"
-              or source["run_attempt"] != 1):
-              raise SystemExit("El run fuente no es un plan válido de este workflow en main.")
-          head = api(repo + "/git/ref/heads/main")["object"]["sha"]
-          if head != e["PLAN_COMMIT"] or e["GITHUB_SHA"] != head:
-              raise SystemExit("Main cambió: se requiere un plan nuevo.")
-          created = dt.datetime.fromisoformat(source["created_at"].replace("Z", "+00:00"))
-          age = dt.datetime.now(dt.timezone.utc) - created
-          if not dt.timedelta(0) <= age <= dt.timedelta(hours=24):
-              raise SystemExit("Plan caducado: se requiere un plan nuevo.")
-          # Serializados por la concurrencia del workflow. Rechazar incluso
-          # intentos fallidos de apply posteriores al plan elegido.
-          page = 1
-          while True:
-              runs = api(repo + "/actions/workflows/" + str(current["workflow_id"])
-                         + "/runs?per_page=100&page=" + str(page))["workflow_runs"]
-              for run in runs:
-                  if (str(run["id"]) == e["GITHUB_RUN_ID"]
-                      or run["created_at"] < source["created_at"]):
-                      continue
-                  job_page = 1
-                  while True:
-                      jobs = api(repo + "/actions/runs/" + str(run["id"])
-                                 + "/jobs?filter=all&per_page=100&page=" + str(job_page))["jobs"]
-                      for job in jobs:
-                          for step in job.get("steps", []):
-                              if (step["name"] == "Validar aprobación manual y vigencia del plan"
-                                  and step["status"] in ("in_progress", "completed")
-                                  and step.get("conclusion") != "skipped"):
-                                  raise SystemExit("Hubo otro intento de apply; generar un plan nuevo con el último estado.")
-                      if len(jobs) < 100:
-                          break
-                      job_page += 1
-              if len(runs) < 100 or all(r["created_at"] < source["created_at"] for r in runs):
-                  break
-              page += 1
-          PY
-
-      - name: Descargar paquete del plan aprobado
-        if: env.OPERATION == 'apply'
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: terraform-plan-${{ inputs.plan_run_id }}-1
-          run-id: ${{ inputs.plan_run_id }}
-          github-token: ${{ github.token }}
-          path: .review
-
-      - name: Verificar paquete y restaurar estado exacto
-        if: env.OPERATION == 'apply'
-        run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import shutil
-          from pathlib import Path
-
-          folder = Path(".review")
-          manifest = json.loads((folder / "manifest.json").read_text())
-          e = os.environ
-          if (manifest.get("operation") != "plan"
-              or manifest.get("run_id") != e["PLAN_RUN_ID"]
-              or manifest.get("commit") != e["PLAN_COMMIT"]
-              or manifest.get("plan_sha256") != e["PLAN_SHA256"]
-              or manifest.get("terraform") != "1.15.9"):
-              raise SystemExit("El paquete no corresponde a la aprobación.")
-          expected = {"bootstrap.tfplan", "plan.txt", ".terraform.lock.hcl"}
-          if manifest.get("has_state") is True:
-              expected.add("terraform.tfstate")
-          elif manifest.get("has_state") is not False:
-              raise SystemExit("Manifiesto de estado inválido.")
-          if set(manifest["files"]) != expected:
-              raise SystemExit("Inventario del paquete inválido.")
-          for name, digest in manifest["files"].items():
-              if hashlib.sha256((folder / name).read_bytes()).hexdigest() != digest:
-                  raise SystemExit("Integridad del paquete inválida.")
-          if manifest["files"]["bootstrap.tfplan"] != e["PLAN_SHA256"]:
-              raise SystemExit("El plan binario difiere del aprobado.")
-          shutil.copyfile(folder / ".terraform.lock.hcl", ".terraform.lock.hcl")
-          if manifest["has_state"]:
-              shutil.copyfile(folder / "terraform.tfstate", "terraform.tfstate")
-          elif Path("terraform.tfstate").exists():
-              raise SystemExit("Estado inesperado en una primera ejecución.")
-          PY
 
       - name: Exigir estado del último apply ejecutado
-        if: env.OPERATION == 'plan'
         run: |
           python3 - <<'PY'
           import json
@@ -239,7 +95,7 @@ jobs:
                                  + "/jobs?filter=all&per_page=100&page=" + str(job_page))["jobs"]
                       for job in jobs:
                           for step in job.get("steps", []):
-                              if (step["name"] == "Aplicar plan aprobado"
+                              if (step["name"] in ("Aplicar plan aprobado", "Aplicar plan guardado")
                                   and step["status"] in ("in_progress", "completed")
                                   and step.get("conclusion") != "skipped"):
                                   timestamp = step.get("started_at")
@@ -263,7 +119,7 @@ jobs:
           PY
 
       - name: Restaurar respaldo elegido explícitamente
-        if: env.OPERATION == 'plan' && github.event_name == 'workflow_dispatch' && inputs.restore_run_id != ''
+        if: github.event_name == 'workflow_dispatch' && inputs.restore_run_id != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: terraform-state-${{ inputs.restore_run_id }}-${{ inputs.restore_run_attempt }}
@@ -280,7 +136,6 @@ jobs:
           role-session-name: estado-${{ github.run_id }}
 
       - name: Impedir plan nuevo sobre recursos sin estado
-        if: env.OPERATION == 'plan'
         run: |
           umask 077
           python3 - <<'PY'
@@ -343,15 +198,10 @@ jobs:
 
       - name: Inicializar y validar
         run: |
-          if [ "$OPERATION" = "apply" ]; then
-            terraform init -input=false -lockfile=readonly
-          else
-            terraform init -input=false
-          fi
+          terraform init -input=false
           terraform validate
 
       - name: Planificar configuración completa
-        if: env.OPERATION == 'plan'
         run: |
           umask 077
           if ! terraform plan -input=false -lock-timeout=5m -out=bootstrap.tfplan >plan.log 2>&1; then
@@ -360,7 +210,6 @@ jobs:
           fi
 
       - name: Detener eliminaciones o reemplazos
-        if: env.OPERATION == 'plan'
         run: |
           python3 - <<'PY'
           import json
@@ -375,8 +224,7 @@ jobs:
               raise SystemExit("Plan destructivo: requiere revisión separada.")
           PY
 
-      - name: Preparar paquete revisable del plan
-        if: env.OPERATION == 'plan'
+      - name: Preparar paquete de auditoría del plan
         run: |
           umask 077
           mkdir -p .review
@@ -406,14 +254,13 @@ jobs:
           }
           (folder / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
-              summary.write("Revisar plan.txt dentro del artefacto privado antes de aprobar.\n\n")
+              summary.write("Plan generado para apply automático del mismo archivo.\n\n")
               summary.write("Run: " + manifest["run_id"] + "\n\n")
               summary.write("Commit: " + manifest["commit"] + "\n\n")
               summary.write("SHA-256: " + manifest["plan_sha256"] + "\n")
           PY
 
-      - name: Guardar plan para revisión humana
-        if: env.OPERATION == 'plan'
+      - name: Guardar plan para auditoría
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: terraform-plan-${{ github.run_id }}-1
@@ -423,19 +270,47 @@ jobs:
           retention-days: 1
 
       - name: Comprobar main antes de aplicar
-        if: env.OPERATION == 'apply'
         run: |
           head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
-          test "$head" = "$PLAN_COMMIT"
+          test "$head" = "$GITHUB_SHA"
 
-      - name: Aplicar plan aprobado
-        if: env.OPERATION == 'apply'
+      - name: Aplicar plan guardado
         run: |
           umask 077
-          if ! terraform apply -input=false -lock-timeout=5m .review/bootstrap.tfplan >apply.log 2>&1; then
+          if ! terraform apply -input=false -lock-timeout=5m bootstrap.tfplan >apply.log 2>&1; then
             echo "Apply fallido; revisar respaldo de estado, sin publicar el log sensible."
             exit 1
           fi
+
+      - name: Resumir resultado sin publicar logs sensibles
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          lines = []
+          for name in ("plan.log", "apply.log"):
+              path = Path(name)
+              if not path.exists():
+                  continue
+              content = re.sub(r"\x1b\[[0-9;]*m", "", path.read_text())
+              summaries = re.findall(
+                  r"^(?:Plan: [^\n]+|Apply complete! Resources: [^\n]+)$",
+                  content, re.MULTILINE
+              )
+              operations = re.findall(r"operation error ([A-Za-z0-9]+): ([A-Za-z0-9]+)", content)
+              denied = re.findall(r"not authorized to perform: ([A-Za-z0-9:]+)", content)
+              lines.extend(summaries)
+              lines.extend("Error AWS: " + service + ":" + operation
+                           for service, operation in sorted(set(operations)))
+              lines.extend("Permiso denegado: " + action for action in sorted(set(denied)))
+          for line in lines:
+              print(line)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("\n\n" + "\n\n".join(lines) + "\n")
+          PY
 
       - name: Conservar estado, también ante fallo parcial
         if: always()
