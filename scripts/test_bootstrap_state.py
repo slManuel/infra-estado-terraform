@@ -9,7 +9,7 @@ from unittest.mock import patch
 import zipfile
 
 from bootstrap_state import (LEGACY_SOURCE, backup, choose_state, latest_apply,
-                             read_archive, select_artifact)
+                             read_archive, select_artifact, recovery_snapshot)
 
 REPOSITORY = {"id": 42, "full_name": "owner/bootstrap"}
 
@@ -46,6 +46,38 @@ def artifact(source, attempt, raw):
 
 
 class RestoreTests(unittest.TestCase):
+    def test_recovery_is_exact_origin_and_rejects_completed_operations(self):
+        source=run(2,"failure")
+        payload=state()
+        files={"terraform.tfstate":payload}
+        manifest={"operation":"plan","has_state":True,"run_id":"2","commit":source["head_sha"],
+                  "files":{"terraform.tfstate":hashlib.sha256(payload).hexdigest()}}
+        files["manifest.json"]=json.dumps(manifest).encode()
+        plan_zip=archive(files)
+        error_log="\n".join('Error: creating S3 Bucket (tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-'+suffix+'): AccessDenied: s3:CreateBucket' for suffix in ("qa","production"))
+        for completed in (False,True):
+            logs_zip=archive({"apply.log":error_log+("\nModifications complete" if completed else "")})
+            record={"repository":REPOSITORY["full_name"],"repository_id":42,"workflow_id":7,"run_id":2,
+                    "run_attempt":1,"commit":source["head_sha"],"plan_artifact_id":11,"logs_artifact_id":12,
+                    "plan_artifact_digest":"sha256:"+hashlib.sha256(plan_zip).hexdigest(),
+                    "logs_artifact_digest":"sha256:"+hashlib.sha256(logs_zip).hexdigest(),
+                    "state_sha256":hashlib.sha256(payload).hexdigest(),
+                    "lineage_sha256":hashlib.sha256(b"existing-lineage").hexdigest(),"serial":27}
+            def selected(*args,**kwargs):
+                kind="plan" if kwargs["name"].startswith("terraform-plan") else "logs"
+                return {"id":record[kind+"_artifact_id"],"digest":record[kind+"_artifact_digest"]}
+            def download(path):
+                return plan_zip if "/11/zip" in path else logs_zip
+            with patch("bootstrap_state.select_artifact",side_effect=selected):
+                if completed:
+                    with self.assertRaisesRegex(ValueError,"completó operaciones"):
+                        recovery_snapshot(run(99),source,1,record,None,download)
+                else:
+                    actual,_=recovery_snapshot(run(99),source,1,record,None,download)
+                    self.assertEqual(actual["serial"],27)
+                    with self.assertRaisesRegex(ValueError,"no corresponde"):
+                        recovery_snapshot(run(99),source,2,record,None,download)
+
     def test_latest_failed_partial_apply_over_success_and_skipped(self):
         runs = [run(99), run(3), run(2, "failure", attempt=2), run(1)]
         jobs = {"3/attempts/1": step(None, "skipped"),
@@ -145,6 +177,7 @@ class RestoreTests(unittest.TestCase):
         self.assertNotIn("vars.AWS_DEPLOY_ENABLED", text)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("terraform apply -no-color -input=false -lock-timeout=5m bootstrap.tfplan", text)
+        self.assertIn("path: .state-backup/\n          include-hidden-files: true", text)
 
 
 if __name__ == "__main__":

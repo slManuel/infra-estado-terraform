@@ -61,9 +61,9 @@ def latest_apply(current, get):
     return newest[3], newest[2]
 
 
-def select_artifact(current, run, attempt, get):
+def select_artifact(current, run, attempt, get, name=None):
     base = "repos/" + current["repository"]["full_name"]
-    name = f'terraform-state-{run["id"]}-{attempt}'
+    name = name or f'terraform-state-{run["id"]}-{attempt}'
     matches = [a for a in pages(base + f'/actions/runs/{run["id"]}/artifacts', "artifacts", get)
                if a["name"] == name]
     if len(matches) != 1 or matches[0]["expired"]:
@@ -78,6 +78,63 @@ def select_artifact(current, run, attempt, get):
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", artifact.get("digest") or ""):
         raise ValueError("Artefacto sin SHA-256 verificable.")
     return artifact
+
+
+def checked_zip(raw, digest, allowed):
+    if "sha256:" + hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("SHA-256 del ZIP no coincide con GitHub.")
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        names = archive.namelist()
+        if (len(names) != len(set(names)) or not set(names) <= allowed
+                or sum(info.file_size for info in archive.infolist()) > 20 * 1024 * 1024):
+            raise ValueError("Contenido inesperado, duplicado o excesivo en el respaldo.")
+        return {name: archive.read(name) for name in names}
+
+
+def recovery_snapshot(current, run, attempt, record, get, download):
+    """One explicitly approved incident, never a generic missing-state fallback."""
+    expected = {"repository": current["repository"]["full_name"],
+                "repository_id": current["repository"]["id"], "workflow_id": current["workflow_id"],
+                "run_id": run["id"], "run_attempt": attempt, "commit": run["head_sha"]}
+    if any(record.get(key) != value for key, value in expected.items()):
+        raise ValueError("La recuperación autorizada no corresponde al último apply.")
+    base = "repos/" + current["repository"]["full_name"]
+    packages = {}
+    for kind, prefix, allowed in (
+        ("plan", "terraform-plan", {"manifest.json", "terraform.tfstate", "bootstrap.tfplan", ".terraform.lock.hcl", "plan.txt"}),
+        ("logs", "terraform-diagnostico", {"plan.log", "apply.log"}),
+    ):
+        name = f'{prefix}-{run["id"]}-{attempt}'
+        artifact = select_artifact(current, run, attempt, get, name=name)
+        if (artifact["id"] != record[kind + "_artifact_id"]
+                or artifact["digest"] != record[kind + "_artifact_digest"]):
+            raise ValueError("Artefacto distinto del aprobado para recuperación.")
+        raw = download(base + f'/actions/artifacts/{artifact["id"]}/zip')
+        packages[kind] = checked_zip(raw, artifact["digest"], allowed)
+    manifest = json.loads(packages["plan"]["manifest.json"])
+    if (manifest.get("run_id") != str(run["id"]) or manifest.get("commit") != run["head_sha"]
+            or manifest.get("operation") != "plan" or not manifest.get("has_state")):
+        raise ValueError("Manifiesto de recuperación inconsistente.")
+    if set(manifest["files"]) != set(packages["plan"]) - {"manifest.json"}:
+        raise ValueError("El manifiesto no cubre todos los archivos del plan.")
+    if any(hashlib.sha256(packages["plan"][name]).hexdigest() != digest
+           for name, digest in manifest["files"].items()):
+        raise ValueError("Hash de archivo de recuperación incorrecto.")
+    apply_log = packages["logs"]["apply.log"].decode()
+    if re.search(r"(?:Creation|Modifications|Destruction) complete", apply_log):
+        raise ValueError("El apply completó operaciones; el snapshot previo no se puede recuperar.")
+    for suffix in ("qa", "production"):
+        bucket = "tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-" + suffix
+        if not re.search(r"Error: creating S3 Bucket \(" + re.escape(bucket)
+                         + r"\):[^\n]*AccessDenied:[^\n]*s3:CreateBucket", apply_log):
+            raise ValueError("Los logs no acreditan la denegación de ambos CreateBucket.")
+    content = packages["plan"]["terraform.tfstate"]
+    state = parse_state(content)
+    if (hashlib.sha256(content).hexdigest() != record["state_sha256"]
+            or hashlib.sha256(state["lineage"].encode()).hexdigest() != record["lineage_sha256"]
+            or state["serial"] != record["serial"]):
+        raise ValueError("Snapshot distinto del estado aprobado para recuperación.")
+    return state, content
 
 
 def parse_state(raw):
@@ -106,14 +163,7 @@ def choose_state(files):
 
 
 def read_archive(raw, artifact, current, run, attempt):
-    if "sha256:" + hashlib.sha256(raw).hexdigest() != artifact["digest"]:
-        raise ValueError("SHA-256 del ZIP no coincide con GitHub.")
-    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
-        names = archive.namelist()
-        if (len(names) != len(set(names)) or not set(names) <= STATE_FILES | {"state-manifest.json"}
-                or sum(info.file_size for info in archive.infolist()) > 20 * 1024 * 1024):
-            raise ValueError("Contenido inesperado, duplicado o excesivo en el respaldo.")
-        files = {name: archive.read(name) for name in names}
+    files = checked_zip(raw, artifact["digest"], STATE_FILES | {"state-manifest.json"})
     name, state, content = choose_state(files)
     if "state-manifest.json" not in files:
         if (run["id"], attempt) != LEGACY_SOURCE:
@@ -142,14 +192,26 @@ def restore():
             or current["head_branch"] != "main" or current["event"] != "push"):
         raise ValueError("La restauración automática exige push de main del repositorio actual.")
     run, attempt = latest_apply(current, api)
-    artifact = select_artifact(current, run, attempt, api)
-    raw = api(f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip', binary=True)
-    state, content = read_archive(raw, artifact, current, run, attempt)
+    state_name = f'terraform-state-{run["id"]}-{attempt}'
+    available = list(pages(f'repos/{repo}/actions/runs/{run["id"]}/artifacts', "artifacts", api))
+    recovery = not any(artifact["name"] == state_name for artifact in available)
+    if recovery:
+        record = json.loads((Path(__file__).resolve().parents[1] / ".github/state-recovery.json").read_text())
+        state, content = recovery_snapshot(current, run, attempt, record, api,
+                                          lambda path: api(path, binary=True))
+    else:
+        artifact = select_artifact(current, run, attempt, api)
+        raw = api(f'repos/{repo}/actions/artifacts/{artifact["id"]}/zip', binary=True)
+        state, content = read_archive(raw, artifact, current, run, attempt)
     private_write(Path("terraform.tfstate"), content)
     with open(os.environ["GITHUB_ENV"], "a") as output:
         output.write(f'RESTORE_RUN_ID={run["id"]}\nRESTORE_RUN_ATTEMPT={attempt}\n')
+        output.write(f'BOOTSTRAP_RECOVERY={str(recovery).lower()}\n')
     message = f'Estado restaurado automáticamente: run {run["id"]}, intento {attempt}, serial {state["serial"]}.'
     print(message)
+    if recovery:
+        message += " Recuperación única autorizada del paquete del mismo run; exige contraste estricto con AWS en el plan."
+        print("Recuperación autorizada activa; no se tomó un respaldo de un run anterior.")
     with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
         output.write(message + "\n")
 
@@ -168,6 +230,8 @@ def backup():
                 "run_id": int(os.environ["GITHUB_RUN_ID"]), "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
                 "commit": os.environ["GITHUB_SHA"], "lineage": state["lineage"], "serial": state["serial"],
                 "state_sha256": hashlib.sha256(content).hexdigest()}
+    manifest["restored_from_run"] = os.environ.get("RESTORE_RUN_ID")
+    manifest["recovery"] = os.environ.get("BOOTSTRAP_RECOVERY") == "true"
     folder = Path(".state-backup")
     folder.mkdir(mode=0o700)
     private_write(folder / "terraform.tfstate", content)

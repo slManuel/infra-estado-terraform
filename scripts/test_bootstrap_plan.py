@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 from check_bootstrap_plan import NEW_BUCKETS, POLICIES, validate
 
 def fixture():
@@ -8,6 +9,19 @@ def fixture():
     return {"resource_changes":changes}
 
 class BootstrapTests(unittest.TestCase):
+    def test_recovery_requires_expected_aws_convergence_only(self):
+        plan=fixture()
+        for change in plan["resource_changes"]:
+            if change["address"] in POLICIES and not change["address"].endswith(".acceso_estado_microservicio"):
+                change["change"]["actions"]=["no-op"]
+        validate(plan,recovery=True)
+        for address in POLICIES:
+            if address.endswith(".acceso_estado_microservicio"):
+                continue
+            changed=deepcopy(plan)
+            next(c for c in changed["resource_changes"] if c["address"]==address)["change"]["actions"]=["update"]
+            with self.assertRaises(ValueError):validate(changed,recovery=True)
+
     def test_expected_and_idempotent(self):
         validate(fixture())
         plan=fixture()

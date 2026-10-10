@@ -1,0 +1,16 @@
+{
+  "reason": "Recuperaci\u00f3n \u00fanica autorizada: upload omiti\u00f3 directorio oculto; apply fall\u00f3 sin operaciones completadas.",
+  "repository": "slManuel/infra-estado-terraform",
+  "repository_id": 1412094017,
+  "workflow_id": 380176479,
+  "run_id": 38069815451,
+  "run_attempt": 1,
+  "commit": "e0c4665695cea41a3c8d24a0532ae2e2c385281f",
+  "plan_artifact_id": 11675603122,
+  "plan_artifact_digest": "sha256:21d80d3c9b448edd2e523deb3e6f1182114b7a7367e445c2b0af343930016f04",
+  "logs_artifact_id": 11676107788,
+  "logs_artifact_digest": "sha256:85e717e7118021bc81c0151b90185fd9ee7fa0b7a2908f660faff9545821dc91",
+  "state_sha256": "dcebbc57a6c5533de12bff3c57d75d6e4ba6dd3d3418792d24bbbd2f9a557f8e",
+  "lineage_sha256": "75d1c716b6035a9fb2ffa95f9d544d6394564965d118366c5a40e916f1f67b09",
+  "serial": 27
+}
