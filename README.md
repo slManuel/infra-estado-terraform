@@ -92,3 +92,8 @@ Los pasos de plan y apply muestran ahora el texto legible de Terraform en direct
 En Actions abrir el job deploy y el paso Planificar o Aplicar: aparecen refrescos, Creating/Still creating, errores del proveedor y código real. Las comprobaciones de alcance siguen leyendo el plan JSON en memoria sin imprimirlo. No se imprimen estados Terraform, credenciales ni tokens; se revisaron los recursos y outputs actuales, que contienen infraestructura e identificadores, sin valores secretos. Antes de incorporar recursos con secretos se debe revisar nuevamente la salida. Los respaldos de estado y planes binarios continúan en artefactos privados.
 
 El recorrido sigue siendo validar → planificar → comprobar alcance → aplicar el mismo plan guardado → verificar AWS. Esta mejora conserva OIDC, backend, triggers y mecanismo automático vigente. La publicación usa `[skip ci]` para evitar despliegues adicionales durante el apply activo; no cambia el comportamiento de las ejecuciones futuras.
+
+
+## Política preparada, pendiente de aplicar — 10/10/2026
+
+El código del rol micro agrega lectura de security-group rules, etiquetado de reglas y autorización/revocación de ingress únicamente sobre SG de us-east-1 etiquetado `aws:eks:cluster-name=prueba-devops-microservicio`. Permite que Terraform gestione TCP443 desde SG tools al API privado micro. No se ha cambiado IAM real. Antes de aplicar, recuperar y verificar el estado local bootstrap existente; nunca iniciar con estado vacío. Este commit usa `[skip ci]` para evitar un apply automático del bootstrap. Cambios IAM y reanudación AWS siguen pendientes de autorización y revisión del plan con estado válido.

@@ -122,6 +122,7 @@ resource "aws_iam_role_policy" "aprovisionar_microservicio" {
           "ec2:DescribeInstanceTypes",
           "ec2:DescribeSubnets",
           "ec2:DescribeSecurityGroups",
+          "ec2:DescribeSecurityGroupRules",
           "ec2:DescribeVpcs",
           "ec2:RunInstances"
         ]
@@ -142,11 +143,24 @@ resource "aws_iam_role_policy" "aprovisionar_microservicio" {
         Resource = [
           "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:launch-template/*",
           "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:instance/*",
-          "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*"
+          "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:volume/*",
+          "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group-rule/*"
         ]
         Condition = {
           StringEquals = {
             "aws:RequestedRegion" = var.aws_region
+          }
+        }
+      },
+      {
+        Sid      = "APIPrivadaMicroDesdeJenkins"
+        Effect   = "Allow"
+        Action   = ["ec2:AuthorizeSecurityGroupIngress", "ec2:RevokeSecurityGroupIngress"]
+        Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*"
+        Condition = {
+          StringEquals = {
+            "aws:RequestedRegion"                  = var.aws_region
+            "aws:ResourceTag/aws:eks:cluster-name" = "prueba-devops-microservicio"
           }
         }
       },
