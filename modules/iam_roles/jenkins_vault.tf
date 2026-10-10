@@ -178,7 +178,7 @@ resource "aws_iam_role_policy" "aprovisionar_jenkins_vault" {
               "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
               "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
               "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
-              "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicyV2"
+              "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"
             ]
           }
         }
@@ -213,6 +213,15 @@ resource "aws_iam_role_policy" "aprovisionar_jenkins_vault" {
             ]
           }
         }
+      },
+      {
+        Sid    = "LeerRolesVinculadosEKS"
+        Effect = "Allow"
+        Action = "iam:GetRole"
+        Resource = [
+          "arn:aws:iam::${var.aws_account_id}:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+          "arn:aws:iam::${var.aws_account_id}:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+        ]
       },
       {
         Sid      = "LeerAdministrador"

@@ -223,23 +223,22 @@ jobs:
           ):
               raise SystemExit("Plan destructivo: requiere revisión separada.")
           expected = {
-              "module.iam_roles.aws_iam_role_policy.aprovisionar_red",
               "module.iam_roles.aws_iam_role_policy.aprovisionar_jenkins_vault",
               "module.iam_roles.aws_iam_role_policy.aprovisionar_microservicio",
           }
-          created = set()
+          updated = set()
           for change in plan.get("resource_changes", []):
               actions = change["change"]["actions"]
               address = change["address"]
-              if actions == ["create"] and address in expected:
-                  created.add(address)
+              if actions == ["update"] and address in expected:
+                  updated.add(address)
               elif actions != ["no-op"]:
                   raise SystemExit("Cambio fuera del bootstrap autorizado: " + address)
               if change.get("previous_address"):
                   print("Movimiento: " + change["previous_address"] + " -> " + address)
-          if created != expected:
-              raise SystemExit("El plan no contiene exactamente las tres políticas aprobadas.")
-          print("Plan autorizado: 3 políticas nuevas; 0 cambios; 0 eliminaciones.")
+          if updated != expected:
+              raise SystemExit("El plan no actualiza exactamente las dos políticas EKS corregidas.")
+          print("Plan autorizado: 0 creaciones; 2 políticas EKS actualizadas; 0 eliminaciones.")
           PY
 
       - name: Preparar paquete de auditoría del plan
