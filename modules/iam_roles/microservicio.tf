@@ -13,7 +13,11 @@ resource "aws_iam_role" "github_actions_microservicio" {
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-            "token.actions.githubusercontent.com:sub" = "repo:slManuel@65916668/infra-microservicio@1410582120:ref:refs/heads/main"
+            "token.actions.githubusercontent.com:sub" = [
+              "repo:slManuel@65916668/infra-microservicio@1410582120:ref:refs/heads/develop",
+              "repo:slManuel@65916668/infra-microservicio@1410582120:ref:refs/heads/qa",
+              "repo:slManuel@65916668/infra-microservicio@1410582120:ref:refs/heads/main"
+            ]
           }
         }
       }
@@ -32,7 +36,7 @@ resource "aws_iam_role_policy" "acceso_estado_microservicio" {
         Sid      = "ListarEstadoMicroservicio"
         Effect   = "Allow"
         Action   = "s3:ListBucket"
-        Resource = var.state_bucket_arn
+        Resource = [var.state_bucket_arn, var.state_bucket_qa_arn, var.state_bucket_production_arn]
         Condition = {
           StringLike = {
             "s3:prefix" = ["microservicio/*"]
@@ -40,16 +44,24 @@ resource "aws_iam_role_policy" "acceso_estado_microservicio" {
         }
       },
       {
-        Sid      = "LeerYGuardarEstadoMicroservicio"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject"]
-        Resource = "${var.state_bucket_arn}/microservicio/terraform.tfstate"
+        Sid    = "LeerYGuardarEstadoMicroservicio"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject"]
+        Resource = [
+          "${var.state_bucket_arn}/microservicio/development/terraform.tfstate",
+          "${var.state_bucket_qa_arn}/microservicio/qa/terraform.tfstate",
+          "${var.state_bucket_production_arn}/microservicio/production/terraform.tfstate"
+        ]
       },
       {
-        Sid      = "GestionarBloqueoEstadoMicroservicio"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-        Resource = "${var.state_bucket_arn}/microservicio/terraform.tfstate.tflock"
+        Sid    = "GestionarBloqueoEstadoMicroservicio"
+        Effect = "Allow"
+        Action = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = [
+          "${var.state_bucket_arn}/microservicio/development/terraform.tfstate.tflock",
+          "${var.state_bucket_qa_arn}/microservicio/qa/terraform.tfstate.tflock",
+          "${var.state_bucket_production_arn}/microservicio/production/terraform.tfstate.tflock"
+        ]
       },
       {
         Sid      = "LeerEstadoRedCompartida"
@@ -159,8 +171,12 @@ resource "aws_iam_role_policy" "aprovisionar_microservicio" {
         Resource = "arn:aws:ec2:${var.aws_region}:${var.aws_account_id}:security-group/*"
         Condition = {
           StringEquals = {
-            "aws:RequestedRegion"                  = var.aws_region
-            "aws:ResourceTag/aws:eks:cluster-name" = "prueba-devops-microservicio"
+            "aws:RequestedRegion" = var.aws_region
+            "aws:ResourceTag/aws:eks:cluster-name" = [
+              "prueba-devops-microservicio-development",
+              "prueba-devops-microservicio-qa",
+              "prueba-devops-microservicio-production"
+            ]
           }
         }
       },

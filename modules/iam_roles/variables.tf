@@ -21,3 +21,15 @@ variable "github_oidc_provider_arn" {
   type        = string
   nullable    = false
 }
+
+variable "state_bucket_qa_arn" {
+  description = "Bucket exclusivo del estado QA."
+  type        = string
+  nullable    = false
+}
+
+variable "state_bucket_production_arn" {
+  description = "Bucket exclusivo del estado production."
+  type        = string
+  nullable    = false
+}

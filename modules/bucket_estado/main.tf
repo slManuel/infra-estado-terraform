@@ -1,6 +1,7 @@
 resource "aws_s3_bucket" "bucket_estado_terraform" {
   bucket        = var.bucket_name
   force_destroy = false
+  tags          = var.bucket_tags
 }
 
 resource "aws_s3_bucket_public_access_block" "bloqueo_publico_estado" {

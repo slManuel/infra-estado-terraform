@@ -32,13 +32,16 @@ jobs:
         with:
           terraform_version: 1.15.9
           terraform_wrapper: false
-      - run: terraform fmt -check -diff
-      - run: terraform init -backend=false -input=false
-      - run: terraform validate
+      - run: terraform fmt -check -recursive -diff
+      - run: terraform init -backend=false -input=false -lockfile=readonly
+      - run: |
+          terraform validate
+          terraform test -no-color
+          python3 scripts/test_bootstrap_plan.py
 
   deploy:
     needs: checks
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: vars.AWS_DEPLOY_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -181,12 +184,17 @@ jobs:
                   for resource in resources
               )
 
-          if exists(
-              ["s3api", "get-bucket-versioning", "--bucket", bucket,
-               "--expected-bucket-owner", "022907376152"],
-              "NoSuchBucket"
-          ) and not recorded("aws_s3_bucket", bucket):
-              raise SystemExit("Bucket existente sin registro en el estado restaurado.")
+          for bucket in (
+              "tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis",
+              "tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-qa",
+              "tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-production",
+          ):
+              if exists(
+                  ["s3api", "get-bucket-versioning", "--bucket", bucket,
+                   "--expected-bucket-owner", "022907376152"],
+                  "NoSuchBucket"
+              ) and not recorded("aws_s3_bucket", bucket):
+                  raise SystemExit("Bucket existente sin registro en el estado restaurado.")
 
           for suffix in ("red", "jenkins-vault", "microservicio"):
               role = "prueba-devops-github-actions-" + suffix
@@ -198,7 +206,7 @@ jobs:
 
       - name: Inicializar y validar
         run: |
-          terraform init -input=false
+          terraform init -input=false -lockfile=readonly
           terraform validate
 
       - name: Planificar configuración completa
@@ -215,36 +223,7 @@ jobs:
           if [ "${codes[1]}" -ne 0 ]; then exit "${codes[1]}"; fi
 
       - name: Detener eliminaciones o reemplazos
-        run: |
-          python3 - <<'PY'
-          import json
-          import subprocess
-          plan = json.loads(subprocess.check_output(
-              ["terraform", "show", "-json", "bootstrap.tfplan"], text=True
-          ))
-          if any(
-              "delete" in change["change"]["actions"]
-              for change in plan.get("resource_changes", [])
-          ):
-              raise SystemExit("Plan destructivo: requiere revisión separada.")
-          expected = {
-              "module.iam_roles.aws_iam_role_policy.aprovisionar_jenkins_vault",
-              "module.iam_roles.aws_iam_role_policy.aprovisionar_microservicio",
-          }
-          updated = set()
-          for change in plan.get("resource_changes", []):
-              actions = change["change"]["actions"]
-              address = change["address"]
-              if actions == ["update"] and address in expected:
-                  updated.add(address)
-              elif actions != ["no-op"]:
-                  raise SystemExit("Cambio fuera del bootstrap autorizado: " + address)
-              if change.get("previous_address"):
-                  print("Movimiento: " + change["previous_address"] + " -> " + address)
-          if updated != expected:
-              raise SystemExit("El plan no actualiza exactamente las dos políticas EKS corregidas.")
-          print("Plan autorizado: 0 creaciones; 2 políticas EKS actualizadas; 0 eliminaciones.")
-          PY
+        run: python3 scripts/check_bootstrap_plan.py bootstrap.tfplan
 
       - name: Preparar paquete de auditoría del plan
         run: |

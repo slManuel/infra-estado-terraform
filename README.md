@@ -1,99 +1,59 @@
 # Infraestructura de estado Terraform
 
-Infraestructura base para los estados Terraform de la prueba DevOps.
+Administra **exactamente tres buckets**, un proveedor OIDC y los roles compartidos de GitHub Actions. Un solo root/estado Terraform es propietario de todo; este repositorio conserva `main`.
 
-Declara un bucket S3 con bloqueo de acceso público, versionado, cifrado AES256 y política que exige HTTPS. También declara el proveedor OIDC de GitHub y tres roles con políticas de acceso al estado: red, Jenkins/Vault y microservicio. El rol de red incluye una política EC2 para aprovisionar la red compartida. Jenkins/Vault y microservicio tienen políticas de capacidad EKS en la región configurada, con roles de ejecución separados por prefijo.
+| Entorno | Bucket | Estados |
+|---|---|---|
+| development | `tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis` (existente) | `microservicio/development/terraform.tfstate`; excepción: red y herramientas en sus rutas actuales |
+| qa | `tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-qa` | `microservicio/qa/terraform.tfstate` |
+| production | `tfstate-prueba-cuscatlan-oct2026-jose-manuel-solis-production` | `microservicio/production/terraform.tfstate` |
 
-## Bootstrap
+No se renombra el bucket actual ni se crea un cuarto. Red/tools siguen en `red-compartida/terraform.tfstate` y `jenkins-vault/terraform.tfstate` dentro de development. El estado del propio bootstrap continúa respaldado en Actions; migrarlo a S3 sigue pendiente.
 
-El proveedor OIDC y el rol `prueba-devops-github-actions-estado` ya se crearon manualmente. El workflow usa ese rol mediante OIDC, sin claves AWS guardadas en GitHub, e importa el proveedor existente. El rol bootstrap sigue administrado manualmente.
+## Carpetas
 
-El resultado real de cada despliegue se comprueba en GitHub Actions: un plan exitoso por sí solo no demuestra que el apply haya terminado.
+- `modules/bucket_estado`: módulo llamado tres veces; cifrado, versionado, bloqueo público y HTTPS.
+- `modules/github_oidc`: único proveedor OIDC compartido.
+- `modules/iam_roles`: permisos de estado y aprovisionamiento por proyecto.
+- `scripts`, `tests`: compuerta del plan y pruebas sin AWS.
+- `main.tf`, `imports.tf`, `moved.tf`: composición y conservación de recursos existentes.
 
-## Plan y apply automático
+El rol OIDC de microservicio acepta exactamente develop/qa/main y opera las tres claves/locks; los roles de red/tools conservan main y sus permisos. Se mantienen nombres IAM y el prefijo PassRole existente. La regla de API privada admite los tres nombres EKS desde Jenkins.
 
-- Un push a `main` ejecuta formato, inicialización y validación; genera un plan nuevo y aplica automáticamente ese mismo archivo en el mismo job.
-- Los pull requests solo comprueban formato y validez, sin autenticarse en AWS.
-- El workflow bloquea eliminaciones/reemplazos, reintentos ambiguos, commits que ya no sean la punta de `main` y recursos existentes sin estado recuperado.
-- `plan.txt`, el plan binario y su manifiesto de hashes quedan en `terraform-plan-RUN_ID-1` para auditoría.
+## Workflow
 
-El apply utiliza `bootstrap.tfplan`, generado en esa ejecución, con el mismo estado y lock de proveedores. El workflow serializa las ejecuciones y conserva un respaldo incluso tras un fallo parcial normal.
+**1 workflow, 2 jobs, 22 pasos:** checks (5) → deploy (17). Push/PR a main solo valida. Deploy exige ejecución manual en main y `AWS_DEPLOY_ENABLED=true`; administra juntos los tres buckets, no solo producción.
 
-## Estado provisional
+Restaurar el respaldo del último apply mediante restore_run_id/restore_run_attempt. La compuerta solo admite 10 recursos nuevos de QA/production, dos políticas micro y el trust de su rol; todo lo demás debe ser no-op. Rechaza destrucción/reemplazo. El workflow aplica el mismo plan dentro de esa ejecución manual; **no es un flujo para obtener solamente un plan**. Estado: 14 días; plan/logs: un día.
 
-El backend es **local**; la migración del estado al bucket S3 queda para después.
+| Job `checks`: paso | Función |
+|---|---|
+| 1. Checkout | Obtiene el código del repositorio. |
+| 2. Setup Terraform | Instala Terraform 1.15.9. |
+| 3. `terraform fmt -check -diff` | Comprueba recursivamente raíz, módulos y pruebas sin modificar archivos. |
+| 4. `terraform init -backend=false` | Inicializa módulos y proveedores sin configurar el backend. |
+| 5. `terraform validate` | Valida Terraform, prueba tres buckets con proveedor simulado y prueba la compuerta del plan. |
 
-El plan se conserva como artefacto durante **1 día** y el respaldo de estado durante **14 días**. Son archivos sensibles, descargables por quienes tengan acceso suficiente al repositorio privado; no deben compartirse. Los logs de plan/apply no se imprimen.
+| Job `deploy`: paso | Función |
+|---|---|
+| 1. Checkout | Obtiene el código que se va a desplegar. |
+| 2. Setup Terraform | Instala Terraform 1.15.9. |
+| 3. Impedir rerun con artefactos ambiguos | Exige el primer intento del run. |
+| 4. Exigir estado del último apply ejecutado | Comprueba que se seleccionó el run del último apply ejecutado, incluso si terminó con fallo. |
+| 5. Restaurar respaldo elegido explícitamente | En ejecución manual con `restore_run_id`, descarga el estado del run e intento indicados. |
+| 6. Autenticarse mediante OIDC | Asume el rol AWS de estado con credenciales temporales. |
+| 7. Impedir plan nuevo sobre recursos sin estado | Valida el respaldo y bloquea el avance si cualquiera de los tres buckets o los tres roles existe sin registro en ese estado. |
+| 8. Inicializar y validar | Ejecuta `terraform init` y `terraform validate`. |
+| 9. Planificar configuración completa | Guarda `bootstrap.tfplan` y registra la salida en `plan.log`. |
+| 10. Detener eliminaciones o reemplazos | Solo admite los 10 recursos S3 de QA/producción (create/no-op), las dos políticas de estado/provisioning micro y la confianza de su rol OIDC (update/no-op). Todo lo demás debe ser no-op; nunca delete/reemplazo. |
+| 11. Preparar paquete de auditoría del plan | Reúne plan, lockfile y estado disponible, con manifiesto SHA-256, commit y run; publica sus referencias en el resumen. |
+| 12. Guardar plan para auditoría | Sube el paquete como artefacto con retención de 1 día. |
+| 13. Comprobar main antes de aplicar | Verifica que `main` todavía apunta al commit de la ejecución. |
+| 14. Aplicar plan guardado | Aplica automáticamente el mismo `bootstrap.tfplan` y registra la salida en `apply.log`. |
+| 15. Resumir resultado y diagnóstico | Incluso ante fallo, resume resultados y errores AWS de los logs disponibles. |
+| 16. Conservar estado, también ante fallo parcial | Intenta respaldar los archivos de estado disponibles como artefacto durante 14 días. |
+| 17. Conservar logs de Terraform, también ante fallo | Intenta guardar `plan.log` y `apply.log` como artefacto durante 1 día. |
 
-Después de un apply, inicia el siguiente despliegue con **Run workflow** en `main`, `restore_run_id` del último apply ejecutado y `restore_run_attempt=1`. Esta ejecución restaura el estado y luego planifica y aplica automáticamente. El workflow exige ese respaldo y detiene un push sin estado si los recursos ya existen.
+## Estado
 
-Conserva el último estado válido antes de que expire. Una pérdida del runner o fallo al subir el respaldo requiere recuperación; este mecanismo no sustituye un backend remoto. Si cambian recursos directamente en AWS, revisa y reconcilia el estado antes de iniciar otro despliegue.
-
-## Permisos de red
-
-La política se escribe como una lista literal de `Statement`, con permisos explícitos y sin `locals`, bucles ni composición dinámica. `jsonencode` convierte ese objeto HCL en el JSON que IAM recibe.
-
-`aprovisionar_red` permite crear VPC, subredes, tablas de rutas, Internet Gateway, EIP, NAT Gateway y endpoint de S3. Limita las escrituras por cuenta, región y etiquetas `Project=prueba-devops` y `Component=red-compartida`: exige etiquetas de solicitud para recursos nuevos y etiquetas existentes para sus dependencias. El etiquetado inicial usa `ec2:CreateAction`; las actualizaciones de etiquetas no pueden alterar `Project` ni `Component`.
-
-Las consultas EC2 enumeradas usan `Resource="*"` cuando AWS no admite ARN específicos; pueden leer recursos de la cuenta ajenos al proyecto en la región autorizada. `DescribeVpcAttribute` sí queda limitado a VPC etiquetadas. Las etiquetas no demuestran pertenencia al estado Terraform. La política no concede eliminación de infraestructura, EKS ni administración IAM; la retirada requiere revisar y autorizar permisos adicionales.
-
-Con los valores actuales de cuenta/región, las dos políticas inline declaradas para el rol de red suman **7.668 caracteres compactos**: 674 de S3 y 6.994 de EC2, por debajo del límite agregado de 10.240 por rol. El cálculo no incluye políticas adicionales que pudieran agregarse fuera de este código. Los permisos declarados entran en vigor al aplicar Terraform.
-
-Referencias: [autorización EC2](https://docs.aws.amazon.com/service-authorization/latest/reference/list_ec2.html), [etiquetado durante creación](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/supported-iam-actions-tagging.html) y [cuotas IAM](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_iam-quotas.html).
-
-## Estructura
-
-main.tf conecta tres módulos locales. La raíz conserva providers.tf, versions.tf, variables.tf, outputs.tf, imports.tf, moved.tf y el workflow. No hay carpetas environments ni se cambia el backend local provisional.
-
-- modules/bucket_estado: main.tf contiene el bucket y sus cuatro protecciones/configuraciones; variables.tf recibe su nombre; outputs.tf devuelve nombre y ARN.
-- modules/github_oidc: main.tf contiene el proveedor OIDC; variables.tf recibe URL y audiencias; outputs.tf devuelve su ARN.
-- modules/iam_roles: red.tf, jenkins_vault.tf y microservicio.tf contienen roles y políticas explícitas; variables.tf recibe cuenta/región y ARN de bucket/OIDC; outputs.tf devuelve los tres ARN de roles.
-- Cada módulo declara requisitos en versions.tf y documenta su interfaz en README.md. La configuración AWS se pasa desde raíz, conservando etiquetas y cuenta autorizada.
-
-La salida pública state_bucket_name conserva su valor mediante module.bucket_estado.bucket_name. Los roles reciben module.bucket_estado.bucket_arn y module.github_oidc.provider_arn; no duplican S3/OIDC. El rol manual de bootstrap sigue fuera de Terraform. Versiones sin cambios: Terraform >=1.15.0,<2.0.0, workflow 1.15.9 y AWS =6.68.0.
-
-## Direcciones de estado e import
-
-moved.tf contiene trece correspondencias directas desde las direcciones históricas de raíz a sus módulos finales: cinco S3, una OIDC y siete IAM. Doce corresponden a recursos existentes y una a aprovisionar_red, incorporada en el despliegue de permisos. Conservar estos bloques para actualizar estados anteriores; no se requieren movimientos manuales de estado.
-
-imports.tf conserva el identificador del proveedor OIDC existente y apunta a module.github_oidc.aws_iam_openid_connect_provider.github_actions. No declara otro recurso OIDC. El próximo plan con estado restaurado debe resolver la correspondencia; nunca usar un fresh apply para recursos ya existentes.
-
-Antes de ejecutar el siguiente despliegue, restaurar el respaldo del último apply. La validación offline y la equivalencia de configuración no prueban ausencia de recreaciones. Con el estado conocido y sin drift se esperan tres políticas nuevas, además de doce traslados de direcciones existentes. El workflow comprueba para esta actualización que solo se creen aprovisionar_red, aprovisionar_jenkins_vault y aprovisionar_microservicio y que los demás recursos tengan no-op. Cualquier otro cambio bloquea el apply. Esta comprobación deberá revisarse explícitamente para futuras ampliaciones.
-
-Referencias: [refactorización con moved](https://developer.hashicorp.com/terraform/language/modules/develop/refactoring) y [providers en módulos](https://developer.hashicorp.com/terraform/language/modules/develop/providers).
-
-
-## Capacidad EKS de los roles de despliegue
-
-aprovisionar_jenkins_vault y aprovisionar_microservicio permiten crear, consultar y actualizar EKS, grupos de nodos, addons, accesos y asociaciones Pod Identity en aws_region. Permiten plantillas de lanzamiento y RunInstances en esa región; esto incluye capacidad de lanzar EC2 directamente. El etiquetado EC2 se limita a instancias, volúmenes y plantillas de la cuenta/región. No conceden eliminación de infraestructura ni publicación de imágenes ECR.
-
-IAM se limita a roles con prefijos prueba-devops-jenkins-vault-* y prueba-devops-microservicio-*, respectivamente, cinco políticas administradas enumeradas y PassRole a eks.amazonaws.com/pods.eks.amazonaws.com. CreateRole y UpdateAssumeRolePolicy permiten definir confianza dentro de esos prefijos; no son una garantía absoluta contra delegación privilegiada. Se permite crear los dos service-linked roles de EKS y leer el usuario administrador manuel-dev. No se conceden PutRolePolicy sobre roles de ejecución, creación de políticas ni AdministratorAccess.
-
-No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.450 caracteres (883 S3 + 3.567 EKS), microservicio 4.453 (886 + 3.567), frente al límite agregado de 10.240; no incluyen políticas externas al código.
-
-[Autorización EKS](https://docs.aws.amazon.com/service-authorization/latest/reference/list_eks.html) · [Autorización IAM](https://docs.aws.amazon.com/service-authorization/latest/reference/list_iam.html) · [Plantillas EKS](https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html).
-
-
-## Evidencia de despliegue
-
-El run [38025501360](https://github.com/slManuel/infra-estado-terraform/actions/runs/38025501360) terminó success el 9 de octubre de 2026: doce movimientos, tres políticas añadidas, cero cambios y cero eliminaciones. Se restauró el estado del run38015534898. El nuevo respaldo vigente es terraform-state-38025501360-1, intento1; usarlo en la siguiente restauración mientras no exista otro apply posterior. El backend continúa local. La compuerta de alcance de esta actualización deberá revisarse para una operación futura.
-
-
-Corrección de dependencias EKS: AmazonEBSCSIDriverPolicyV2 usa ARN arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2, sin service-role/. Ambas políticas de capacidad añaden iam:GetRole exclusivamente para AWSServiceRoleForAmazonEKS/AWSServiceRoleForAmazonEKSNodegroup. La compuerta de esta corrección exige solo dos updates de esas políticas, cero creaciones/eliminaciones; todos los demás recursos no-op. Se restaura el último respaldo38025501360. Fuente ARN: https://docs.aws.amazon.com/aws-managed-policy/latest/reference/AmazonEBSCSIDriverPolicyV2.html .
-
-
-La consulta IAM de un rol vinculado aún inexistente se autoriza también por el ARN sin ruta arn:aws:iam::${aws_account_id}:role/AWSServiceRoleForAmazonEKSNodegroup, únicamente GetRole. Se conserva el ARN canónico con ruta para cuando exista. El diagnóstico OIDC38027564437 se detuvo antes de plan/apply y confirmó AccessDenied en GetRole. La segunda corrección restaura el estado38027207876 y actualiza únicamente ambas políticas EKS.
-
-
-## Logs de Terraform — 9 de octubre de 2026
-
-Los pasos de plan y apply muestran ahora el texto legible de Terraform en directo con `-no-color` y `tee`, y conservan `plan.log` y `apply.log` como artefactos privados de un día. Antes la redirección o captura completa ocultaba el progreso; algunos fallos solo mostraban exit 1. Bash captura `PIPESTATUS` inmediatamente: prevalece el código original de Terraform; si Terraform termina bien y tee falla, el paso también falla. Ensayos locales confirmaron stdout/stderr visibles y códigos 0 y 37 conservados.
-
-En Actions abrir el job deploy y el paso Planificar o Aplicar: aparecen refrescos, Creating/Still creating, errores del proveedor y código real. Las comprobaciones de alcance siguen leyendo el plan JSON en memoria sin imprimirlo. No se imprimen estados Terraform, credenciales ni tokens; se revisaron los recursos y outputs actuales, que contienen infraestructura e identificadores, sin valores secretos. Antes de incorporar recursos con secretos se debe revisar nuevamente la salida. Los respaldos de estado y planes binarios continúan en artefactos privados.
-
-El recorrido sigue siendo validar → planificar → comprobar alcance → aplicar el mismo plan guardado → verificar AWS. Esta mejora conserva OIDC, backend, triggers y mecanismo automático vigente. La publicación usa `[skip ci]` para evitar despliegues adicionales durante el apply activo; no cambia el comportamiento de las ejecuciones futuras.
-
-
-## Política preparada, pendiente de aplicar — 10/10/2026
-
-El código del rol micro agrega lectura de security-group rules, etiquetado de reglas y autorización/revocación de ingress únicamente sobre SG de us-east-1 etiquetado `aws:eks:cluster-name=prueba-devops-microservicio`. Permite que Terraform gestione TCP443 desde SG tools al API privado micro. No se ha cambiado IAM real. Antes de aplicar, recuperar y verificar el estado local bootstrap existente; nunca iniciar con estado vacío. Este commit usa `[skip ci]` para evitar un apply automático del bootstrap. Cambios IAM y reanudación AWS siguen pendientes de autorización y revisión del plan con estado válido.
+El bootstrap anterior tiene [evidencia real](imágenes/). Los dos buckets nuevos y los permisos ampliados están preparados localmente, sin plan/apply cloud. Falta comprobar nombres S3 disponibles, permisos del rol bootstrap y el plan con estado restaurado. El gate nuevo no se activó ni publicó. No se modifican OIDC ni recursos existentes mediante recreación.
