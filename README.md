@@ -69,7 +69,7 @@ aprovisionar_jenkins_vault y aprovisionar_microservicio permiten crear, consulta
 
 IAM se limita a roles con prefijos prueba-devops-jenkins-vault-* y prueba-devops-microservicio-*, respectivamente, cinco políticas administradas enumeradas y PassRole a eks.amazonaws.com/pods.eks.amazonaws.com. CreateRole y UpdateAssumeRolePolicy permiten definir confianza dentro de esos prefijos; no son una garantía absoluta contra delegación privilegiada. Se permite crear los dos service-linked roles de EKS y leer el usuario administrador manuel-dev. No se conceden PutRolePolicy sobre roles de ejecución, creación de políticas ni AdministratorAccess.
 
-No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.461 caracteres (883 S3 + 3.578 EKS), microservicio 4.464 (886 + 3.578), frente al límite agregado de 10.240; no incluyen políticas externas al código.
+No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.450 caracteres (883 S3 + 3.567 EKS), microservicio 4.453 (886 + 3.567), frente al límite agregado de 10.240; no incluyen políticas externas al código.
 
 [Autorización EKS](https://docs.aws.amazon.com/service-authorization/latest/reference/list_eks.html) · [Autorización IAM](https://docs.aws.amazon.com/service-authorization/latest/reference/list_iam.html) · [Plantillas EKS](https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html).
 
