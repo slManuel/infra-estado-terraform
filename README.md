@@ -54,7 +54,7 @@ La salida pública state_bucket_name conserva su valor mediante module.bucket_es
 
 ## Direcciones de estado e import
 
-moved.tf contiene trece correspondencias directas desde las direcciones históricas de raíz a sus módulos finales: cinco S3, una OIDC y siete IAM. Doce corresponden a recursos existentes y una a aprovisionar_red, todavía pendiente de publicar/aplicar. Conservar estos bloques para actualizar estados anteriores; no se requieren movimientos manuales de estado.
+moved.tf contiene trece correspondencias directas desde las direcciones históricas de raíz a sus módulos finales: cinco S3, una OIDC y siete IAM. Doce corresponden a recursos existentes y una a aprovisionar_red, incorporada en el despliegue de permisos. Conservar estos bloques para actualizar estados anteriores; no se requieren movimientos manuales de estado.
 
 imports.tf conserva el identificador del proveedor OIDC existente y apunta a module.github_oidc.aws_iam_openid_connect_provider.github_actions. No declara otro recurso OIDC. El próximo plan con estado restaurado debe resolver la correspondencia; nunca usar un fresh apply para recursos ya existentes.
 
@@ -72,3 +72,8 @@ IAM se limita a roles con prefijos prueba-devops-jenkins-vault-* y prueba-devops
 No se limita EKS al nombre de un clúster. La separación S3 conserva estado/lock propios y lectura del estado de red, y no restringe la administración de otros EKS en la región. Totales inline declarados: Jenkins/Vault 4.099 caracteres (883 S3 + 3.216 EKS), microservicio 4.102 (886 + 3.216), frente al límite agregado de 10.240; no incluyen políticas externas al código.
 
 [Autorización EKS](https://docs.aws.amazon.com/service-authorization/latest/reference/list_eks.html) · [Autorización IAM](https://docs.aws.amazon.com/service-authorization/latest/reference/list_iam.html) · [Plantillas EKS](https://docs.aws.amazon.com/eks/latest/userguide/launch-templates.html).
+
+
+## Evidencia de despliegue
+
+El run [38025501360](https://github.com/slManuel/infra-estado-terraform/actions/runs/38025501360) terminó success el 9 de octubre de 2026: doce movimientos, tres políticas añadidas, cero cambios y cero eliminaciones. Se restauró el estado del run38015534898. El nuevo respaldo vigente es terraform-state-38025501360-1, intento1; usarlo en la siguiente restauración mientras no exista otro apply posterior. El backend continúa local. La compuerta de alcance de esta actualización deberá revisarse para una operación futura.
