@@ -56,4 +56,4 @@ Restaurar el respaldo del último apply mediante restore_run_id/restore_run_atte
 
 ## Estado
 
-El bootstrap anterior tiene [evidencia real](imágenes/). Los dos buckets nuevos y los permisos ampliados están preparados localmente, sin plan/apply cloud. Falta comprobar nombres S3 disponibles, permisos del rol bootstrap y el plan con estado restaurado. El gate nuevo no se activó ni publicó. No se modifican OIDC ni recursos existentes mediante recreación.
+El bootstrap anterior tiene [evidencia real](imágenes/). Los dos buckets nuevos y los permisos ampliados están publicados, sin plan/apply cloud. Falta comprobar nombres S3 disponibles, permisos del rol bootstrap y el plan con estado restaurado. El gate AWS_DEPLOY_ENABLED permanece en false. La ejecución manual 38067940124 se canceló antes de autenticarse en AWS o aplicar cambios. El respaldo válido del último apply sigue siendo terraform-state-38027688224-1. No se modifican OIDC ni recursos existentes mediante recreación.
