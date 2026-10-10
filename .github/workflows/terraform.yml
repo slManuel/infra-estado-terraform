@@ -202,12 +202,17 @@ jobs:
           terraform validate
 
       - name: Planificar configuración completa
+        shell: bash
         run: |
           umask 077
-          if ! terraform plan -input=false -lock-timeout=5m -out=bootstrap.tfplan >plan.log 2>&1; then
-            echo "Plan fallido; no se publica su log potencialmente sensible."
-            exit 1
-          fi
+          set -o pipefail
+          set +e
+          terraform plan -no-color -input=false -lock-timeout=5m -out=bootstrap.tfplan 2>&1 | tee plan.log
+          codes=("${PIPESTATUS[@]}")
+          set -e
+          echo "Terraform exit code: ${codes[0]}; tee exit code: ${codes[1]}"
+          if [ "${codes[0]}" -ne 0 ]; then exit "${codes[0]}"; fi
+          if [ "${codes[1]}" -ne 0 ]; then exit "${codes[1]}"; fi
 
       - name: Detener eliminaciones o reemplazos
         run: |
@@ -292,14 +297,19 @@ jobs:
           test "$head" = "$GITHUB_SHA"
 
       - name: Aplicar plan guardado
+        shell: bash
         run: |
           umask 077
-          if ! terraform apply -input=false -lock-timeout=5m bootstrap.tfplan >apply.log 2>&1; then
-            echo "Apply fallido; revisar respaldo de estado, sin publicar el log sensible."
-            exit 1
-          fi
+          set -o pipefail
+          set +e
+          terraform apply -no-color -input=false -lock-timeout=5m bootstrap.tfplan 2>&1 | tee apply.log
+          codes=("${PIPESTATUS[@]}")
+          set -e
+          echo "Terraform exit code: ${codes[0]}; tee exit code: ${codes[1]}"
+          if [ "${codes[0]}" -ne 0 ]; then exit "${codes[0]}"; fi
+          if [ "${codes[1]}" -ne 0 ]; then exit "${codes[1]}"; fi
 
-      - name: Resumir resultado sin publicar logs sensibles
+      - name: Resumir resultado y diagnóstico
         if: always()
         run: |
           python3 - <<'PY'
@@ -340,3 +350,14 @@ jobs:
             errored.tfstate
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Conservar logs de Terraform, también ante fallo
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: terraform-diagnostico-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            plan.log
+            apply.log
+          if-no-files-found: ignore
+          retention-days: 1

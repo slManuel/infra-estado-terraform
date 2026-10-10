@@ -83,3 +83,12 @@ Corrección de dependencias EKS: AmazonEBSCSIDriverPolicyV2 usa ARN arn:aws:iam:
 
 
 La consulta IAM de un rol vinculado aún inexistente se autoriza también por el ARN sin ruta arn:aws:iam::${aws_account_id}:role/AWSServiceRoleForAmazonEKSNodegroup, únicamente GetRole. Se conserva el ARN canónico con ruta para cuando exista. El diagnóstico OIDC38027564437 se detuvo antes de plan/apply y confirmó AccessDenied en GetRole. La segunda corrección restaura el estado38027207876 y actualiza únicamente ambas políticas EKS.
+
+
+## Logs de Terraform — 9 de octubre de 2026
+
+Los pasos de plan y apply muestran ahora el texto legible de Terraform en directo con `-no-color` y `tee`, y conservan `plan.log` y `apply.log` como artefactos privados de un día. Antes la redirección o captura completa ocultaba el progreso; algunos fallos solo mostraban exit 1. Bash captura `PIPESTATUS` inmediatamente: prevalece el código original de Terraform; si Terraform termina bien y tee falla, el paso también falla. Ensayos locales confirmaron stdout/stderr visibles y códigos 0 y 37 conservados.
+
+En Actions abrir el job deploy y el paso Planificar o Aplicar: aparecen refrescos, Creating/Still creating, errores del proveedor y código real. Las comprobaciones de alcance siguen leyendo el plan JSON en memoria sin imprimirlo. No se imprimen estados Terraform, credenciales ni tokens; se revisaron los recursos y outputs actuales, que contienen infraestructura e identificadores, sin valores secretos. Antes de incorporar recursos con secretos se debe revisar nuevamente la salida. Los respaldos de estado y planes binarios continúan en artefactos privados.
+
+El recorrido sigue siendo validar → planificar → comprobar alcance → aplicar el mismo plan guardado → verificar AWS. Esta mejora conserva OIDC, backend, triggers y mecanismo automático vigente. La publicación usa `[skip ci]` para evitar despliegues adicionales durante el apply activo; no cambia el comportamiento de las ejecuciones futuras.
